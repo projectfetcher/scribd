@@ -1,16 +1,22 @@
 import asyncio
 import re
 import csv
+import time
 from pathlib import Path
 
 import pandas as pd
 from playwright.async_api import async_playwright
 
 
-async def scrape_scribd_document(
-    url: str,
-    output_dir: str = "output"
-):
+# Force immediate logs in GitHub Actions
+import functools
+print = functools.partial(print, flush=True)
+
+
+async def scrape_scribd_document(url: str, output_dir: str = "output"):
+
+    start_time = time.time()
+
     output_path = Path(output_dir)
     output_path.mkdir(exist_ok=True)
 
@@ -22,13 +28,15 @@ async def scrape_scribd_document(
 
     async with async_playwright() as p:
 
+        print("Launching browser...")
+
         browser = await p.chromium.launch(
             headless=True,
             args=[
                 "--no-sandbox",
                 "--disable-dev-shm-usage",
-                "--disable-blink-features=AutomationControlled",
-                "--disable-gpu"
+                "--disable-setuid-sandbox",
+                "--disable-gpu",
             ]
         )
 
@@ -45,55 +53,53 @@ async def scrape_scribd_document(
 
         print(f"Opening: {url}")
 
-        await page.goto(
-            url,
-            wait_until="domcontentloaded",
-            timeout=120000
-        )
+        await page.goto(url, wait_until="domcontentloaded", timeout=120000)
 
-        print("Waiting for page to render...")
-        await asyncio.sleep(10)
+        await asyncio.sleep(8)
 
-        # Close popups if present
-        popup_selectors = [
-            'button[aria-label="Close"]',
-            '[data-testid="close-button"]',
-            '.close',
-            '.modal-close'
-        ]
-
-        for selector in popup_selectors:
-            try:
-                await page.click(selector, timeout=3000)
-                print("Closed popup")
-                break
-            except:
-                pass
+        print("Page loaded")
 
         TOTAL_PAGES = 247
 
+        last_url = None
+
         for current_page in range(1, TOTAL_PAGES + 1):
 
-            print(
-                f"Processing page "
-                f"{current_page}/{TOTAL_PAGES}"
-            )
+            elapsed = round(time.time() - start_time)
+
+            print(f"\n===== PAGE {current_page}/{TOTAL_PAGES} | {elapsed}s =====")
 
             try:
-                await page.mouse.wheel(0, 1000)
-            except:
-                pass
+                print("Scrolling...")
+                await page.mouse.wheel(0, 1200)
 
-            await asyncio.sleep(2)
+                await asyncio.sleep(2)
 
-            try:
-                page_text = await page.locator("body").inner_text()
-            except Exception as e:
-                print(
-                    f"Failed reading page "
-                    f"{current_page}: {e}"
+                print("Reading body text...")
+
+                page_text = await asyncio.wait_for(
+                    page.locator("body").inner_text(),
+                    timeout=30
                 )
+
+                print("Text extracted")
+
+            except Exception as e:
+                print(f"ERROR reading page {current_page}: {e}")
+
+                await page.screenshot(
+                    path=f"error_page_{current_page}.png",
+                    full_page=True
+                )
+
                 continue
+
+            # Detect stuck page (very important for Scribd)
+            current_url = page.url
+            if last_url == current_url:
+                print("WARNING: Page URL did not change (possible Scribd freeze)")
+
+            last_url = current_url
 
             lines = page_text.split("\n")
 
@@ -105,9 +111,7 @@ async def scrape_scribd_document(
                     continue
 
                 url_match = re.search(
-                    r"(https?://[^\s]+|"
-                    r"www\.[^\s]+\.[a-z]+|"
-                    r"\b[a-zA-Z0-9\-]+\.(?:com|net|org|sa))",
+                    r"(https?://[^\s]+|www\.[^\s]+\.[a-z]+|\b[a-zA-Z0-9\-]+\.(?:com|net|org|sa))",
                     line,
                     re.IGNORECASE,
                 )
@@ -121,29 +125,35 @@ async def scrape_scribd_document(
                 if len(company_name) < 3:
                     continue
 
-                key = (
-                    company_name.lower(),
-                    website.lower()
-                )
+                key = (company_name.lower(), website.lower())
 
                 if key in seen:
                     continue
 
                 seen.add(key)
 
-                companies.append(
-                    {
-                        "Company Name": company_name,
-                        "Website": website,
-                        "Page": current_page,
-                        "Source": url,
-                    }
-                )
+                companies.append({
+                    "Company Name": company_name,
+                    "Website": website,
+                    "Page": current_page,
+                    "Source": url,
+                })
 
-            if current_page >= TOTAL_PAGES:
-                break
+            # SAVE CHECKPOINT EVERY 20 PAGES (VERY IMPORTANT)
+            if current_page % 20 == 0:
+                pd.DataFrame(companies).to_csv(csv_file, index=False)
+                print(f"Checkpoint saved at page {current_page}")
 
+            # Reload page every 50 pages (prevents memory freeze)
+            if current_page % 50 == 0:
+                print("Reloading page to prevent memory freeze...")
+                await page.reload(wait_until="domcontentloaded", timeout=120000)
+                await asyncio.sleep(5)
+
+            # Move to next page
             moved = False
+
+            print("Trying next page...")
 
             next_selectors = [
                 'button[aria-label="Next page"]',
@@ -154,10 +164,8 @@ async def scrape_scribd_document(
 
             for selector in next_selectors:
                 try:
-                    await page.click(
-                        selector,
-                        timeout=3000
-                    )
+                    print(f"Clicking: {selector}")
+                    await page.click(selector, timeout=3000)
                     moved = True
                     break
                 except:
@@ -165,44 +173,31 @@ async def scrape_scribd_document(
 
             if not moved:
                 try:
-                    await page.keyboard.press(
-                        "ArrowRight"
-                    )
+                    print("Using ArrowRight key")
+                    await page.keyboard.press("ArrowRight")
                     moved = True
                 except:
                     pass
+
+            if not moved:
+                print("WARNING: Could not navigate to next page")
 
             await asyncio.sleep(2)
 
         await browser.close()
 
+    # FINAL SAVE
     if not companies:
-        print(
-            "No companies found.\n"
-            "Possible reasons:\n"
-            "- Scribd login wall\n"
-            "- Document not rendered\n"
-            "- Selectors need updating"
-        )
+        print("No companies found (possible Scribd blocking or login wall)")
         return
 
-    with open(
-        csv_file,
-        "w",
-        newline="",
-        encoding="utf-8"
-    ) as f:
+    print("\nSaving final files...")
 
+    with open(csv_file, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(
             f,
-            fieldnames=[
-                "Company Name",
-                "Website",
-                "Page",
-                "Source",
-            ],
+            fieldnames=["Company Name", "Website", "Page", "Source"],
         )
-
         writer.writeheader()
         writer.writerows(companies)
 
@@ -223,6 +218,4 @@ if __name__ == "__main__":
         "704181222/SAUDI-CONSTRUCTION-COMPANY-LIST"
     )
 
-    asyncio.run(
-        scrape_scribd_document(DOC_URL)
-    )
+    asyncio.run(scrape_scribd_document(DOC_URL))
