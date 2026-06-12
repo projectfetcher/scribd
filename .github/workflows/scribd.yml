@@ -1,0 +1,45 @@
+name: Scribd Saudi Construction Scraper
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 2 * * 1" # Every Monday at 02:00 UTC
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set Up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas openpyxl playwright
+
+      - name: Install Playwright Chromium
+        run: |
+          playwright install chromium
+          playwright install-deps
+
+      - name: Run Scraper
+        run: |
+          python sribd.py
+
+      - name: Upload CSV Output
+        uses: actions/upload-artifact@v4
+        with:
+          name: saudi-construction-csv
+          path: output/saudi_construction_companies.csv
+
+      - name: Upload Excel Output
+        uses: actions/upload-artifact@v4
+        with:
+          name: saudi-construction-excel
+          path: output/saudi_construction_companies.xlsx
