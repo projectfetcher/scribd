@@ -7,14 +7,19 @@ jobs:
   scrape:
     runs-on: ubuntu-latest
 
+    timeout-minutes: 30
+
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
       - name: Show Repository Files
         run: |
+          echo "Current Directory:"
           pwd
-          ls -la
+          echo ""
+          echo "Repository Files:"
+          ls -lah
 
       - name: Set Up Python
         uses: actions/setup-python@v5
@@ -25,12 +30,31 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install pandas openpyxl playwright
-          playwright install chromium
-          playwright install-deps
+          python -m playwright install chromium
+          python -m playwright install-deps
+
+      - name: Verify Playwright Installation
+        run: |
+          python --version
+          playwright --version
 
       - name: Run Scraper
+        env:
+          PYTHONUNBUFFERED: "1"
         run: |
-          python scribd.py
+          echo "Starting scraper..."
+          python -u scribd.py
+
+      - name: Upload Debug Files
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-files
+          path: |
+            *.png
+            *.html
+            *.log
+          if-no-files-found: ignore
 
       - name: Upload CSV
         if: always()
