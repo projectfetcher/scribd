@@ -30,7 +30,7 @@ jobs:
 
       - name: Run Scraper
         run: |
-          python sribd.py
+          python scribd.py
 
       - name: Upload CSV Output
         uses: actions/upload-artifact@v4
